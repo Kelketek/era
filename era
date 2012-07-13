@@ -1,0 +1,201 @@
+( Era by Kelketek of Winter's Oasis
+UNIX-style MUF cron.
+
+    This program must be set W on Fuzzball, or owned by an archwizard on
+ProtoMUCK.
+
+  Copyright [c] 2011, Kelketek of Winter's Oasis
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+     * Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+     * Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+     * Neither the name of Kelketek nor Winter's Oasis nor the
+       names of its contributors may be used to endorse or promote products
+       derived from this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL KELKETEK OR WINTER'S OASIS BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  [INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION] HOWEVER CAUSED AND
+  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  [INCLUDING NEGLIGENCE OR OTHERWISE] ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. )
+
+$def TRUE 1
+$def FALSE 0
+$def EDEN #0 ( Whichever DBREF you intend to store the crontab on )
+$def CRONDIR "~cron" ( Directory where cron-related props will be stored. )
+$def CRONTAB CRONDIR "/crontab" strcat ( Location of the primary crontab )
+( A crontab entry has six parts.
+Minute, Hour, Day of Week, Month, Year, and the command )
+$def CRON_SEGMENTS 6
+
+lvar WEEKDAYS
+lvar MONTHS
+
+: set_constants ( -- ) ( sets more complex 'constants' )
+     { "MON" 1
+       "TUE" 2
+       "WED" 3
+       "THU" 4
+       "FRI" 5
+       "SAT" 6
+       "SUN" 7 }dict WEEKDAYS !
+
+     { "JAN" 1
+       "FEB" 2
+       "MAR" 3
+       "APR" 4
+       "MAY" 5
+       "JUN" 6
+       "JUL" 7
+       "AUG" 8
+       "SEP" 9
+       "OCT" 10
+       "NOV" 11
+       "DEC" 12 }dict MONTHS !
+;
+
+: split_once[ str:target str:delimiter -- {} ]  ( Like strcut, but splits at a delimiter once, eliminating it. )
+    target @ delimiter @ instr var! char
+    char @ not if
+        target @ ""
+    else
+        target @ char @ 1 - strcut
+        delimiter @ strlen strcut swap pop
+    then
+;
+
+: dash_parse[ str:cmd -- @:test ] ( Parses notations like "2-6" )
+    var start_digit
+    var end_digit
+    cmd @ "[[:digit:]]+-[[:digit:]]+" REG_ICASE regexp and not if
+        "Invalid dash notation -- " cmd @ strcat abort
+    then
+    cmd @ "-" split_once end_digit ! start_digit !
+    { "-" start_digit @ atoi end_digit @ atoi }list
+    
+;
+
+: slash_parse[ str:cmd -- @:test ] ( Parses notations like "*/4" )
+    var interval
+    cmd @ "[*0]/[[:digit:]]+" REG_ICASE regexp and not if
+        "Invalid slash notation -- " cmd @ strcat abort
+    then
+    cmd @ "/" split_once swap pop interval !
+    { "/" interval @ atoi }list
+;
+
+: parse_minute[ str:minute_string -- str:"minute" @:minute_tests ]
+    var item
+    "minute"
+    { minute_string @ "," explode array_make
+      foreach
+          item ! pop
+          item @ case
+              "/" instr when
+                  item @ slash_parse
+              end
+              "*" strcmp not when
+                  { "*" }list
+              end
+              "-" instr when
+                  dash_parse
+              end
+              "[[:digit:]]+" REG_ICASE regexp and when
+                  { "digit" item @ atoi }list
+              end
+              default "Invalid syntax for minute -- " item @ strcat abort end
+          endcase
+      repeat
+    }list
+;
+
+: parse_hour[ str:hour_string -- str:"hour" @:day_tests ]
+    "hour" { }list
+;
+
+: parse_day[ str:day_string -- str:"day" @:day_tests ]
+    "day" { }list
+;
+
+: parse_month[ str:month_string -- str:"month" @:month_tests ]
+    "month" { }list
+;
+
+: parse_year[ str:year_string -- str:"year" @:year_tests ]
+    "month" { }list
+;
+
+: parse_target[ str:target_string -- "target" @:target_spec ]
+    "target" { }list
+;
+
+: line_to_spec[ str:line -- array:cronitem ]
+( Takes a string and derives a speclist from it. Returns true or false and an array 
+  or a string respectively )
+
+    var count
+    var minute
+    var hour
+    var weekday
+    var month
+    var year
+    var target
+    var argument
+    
+    line @ "|" split_once argument ! line ! ( Separate the argument from the rest of the cron tab )
+
+    { 
+      'parse_minute 'parse_hour 'parse_day 'parse_month 'parse_year 'parse_target 
+    }list var! parsetable
+
+
+    line @ " " explode array_make line !
+    ( Eliminate null strings from the explosion, if any. )
+    { line @ foreach
+          swap pop dup "" strcmp not if
+               pop
+          then
+      repeat
+     }list array_reverse line !
+
+    line @ array_count CRON_SEGMENTS = not if
+        "Cron entry has the wrong number of components." abort
+    then
+    {
+        line @ foreach
+              swap count !
+              parsetable @ count @ array_getitem execute
+          repeat
+        
+    }dict
+;
+
+: tab_load ( -- ) ( Runs through the crontab and parses it )
+    var raw_crontab
+    var compiled_crontab
+    var line
+    var error
+    set_constants
+    "Loading crontab..." .tell
+    EDEN CRONTAB array_get_proplist raw_crontab !
+    { raw_crontab @ foreach
+        swap line !
+        1 try
+            line_to_spec
+        catch
+            error ! { "Error parsing line " line @ ++ ": " error @ }cat .tell
+        endcatch
+     repeat
+    }list compiled_crontab !
+    "Crontab loaded." .tell
+;
