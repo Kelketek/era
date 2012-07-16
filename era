@@ -4,7 +4,20 @@ UNIX-style MUF cron.
     This program must be set W on Fuzzball, or owned by an archwizard on
 ProtoMUCK.
 
-  Copyright [c] 2011, Kelketek of Winter's Oasis
+    This program has security implications. It should not be run as #1.
+To do so would give any wizard the ability to assume total control if
+FATE is an object any wizard can control. If you only want to have #1
+manage the cron tab, it may be ok to use him, but you will have to make
+sure all cron programs are owned by #1, FATE is owned by #1, and the MUCK
+is compiled with GOD_PRIVs.
+
+    ProtoMUCK wizards are recommended to set the crontab on an object that
+can be supervised by only a particular wizard and which can be set 'Protect'
+to avoid unintentional or malicious modification. You may also wish to
+set up a dedicated wizard just for cron jobs, but configuration is your
+prerogative.
+
+  Copyright [c] 2012, Kelketek of Winter's Oasis
   All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
@@ -31,37 +44,73 @@ ProtoMUCK.
 
 $def TRUE 1
 $def FALSE 0
-$def EDEN #0 ( Whichever DBREF you intend to store the crontab on )
-$def CRONDIR "~cron" ( Directory where cron-related props will be stored. )
-$def CRONTAB CRONDIR "/crontab" strcat ( Location of the primary crontab )
+$def INVALID #-1
+$def FATE prog ( Whichever DBREF you intend to store the crontab on )
+$def CRONDIR "@cron" ( Directory where cron-related props will be stored. )
+$def CRONTAB CRONDIR "/crontab" strcat ( Location of the crontab )
+$def CRONPID CRONDIR "/pid" strcat ( Location of PID number )
 ( A crontab entry has six parts.
 Minute, Hour, Day of Week, Month, Year, and the command )
 $def CRON_SEGMENTS 6
+$def TEST_TYPE 0 ( The test type is the first item in a list array )
+$ifdef __neon wizard
+    "W" "wizhidden_level" sysparm intostr strcat
+$else
+    "W"
+$endif
 
 lvar WEEKDAYS
 lvar MONTHS
+lvar PRESETS
+lvar compiled_crontab
 
 : set_constants ( -- ) ( sets more complex 'constants' )
-     { "MON" 1
-       "TUE" 2
-       "WED" 3
-       "THU" 4
-       "FRI" 5
-       "SAT" 6
-       "SUN" 7 }dict WEEKDAYS !
+     { "MON" "1"
+       "TUE" "2"
+       "WED" "3"
+       "THU" "4"
+       "FRI" "5"
+       "SAT" "6"
+       "SUN" "7" }dict WEEKDAYS !
 
-     { "JAN" 1
-       "FEB" 2
-       "MAR" 3
-       "APR" 4
-       "MAY" 5
-       "JUN" 6
-       "JUL" 7
-       "AUG" 8
-       "SEP" 9
-       "OCT" 10
-       "NOV" 11
-       "DEC" 12 }dict MONTHS !
+     { "JAN" "1"
+       "FEB" "2"
+       "MAR" "3"
+       "APR" "4"
+       "MAY" "5"
+       "JUN" "6"
+       "JUL" "7"
+       "AUG" "8"
+       "SEP" "9"
+       "OCT" "10"
+       "NOV" "11"
+       "DEC" "12" }dict MONTHS !
+
+     { "^([[:space:]]+)?@anually" "0 0 1 1 *"
+       "^([[:space:]]+)?@monthly" "0 0 1 * *"
+       "^([[:space:]]+)?@weekly"  "0 0 * * 0"
+       "^([[:space:]]+)?@daily"   "0 0 * * *"
+       "^([[:space:]]+)?@hourly"  "0 * * * *" }dict PRESETS !
+;
+
+: get_time ( -- @ ) ( Gets the current time, puts it into a workable arrray. )
+    { timesplit } var! timevar
+    ( We won't be using all of these. )
+    { "seconds" "minutes" "hours" "monthday" "month" "year" "weekday" "yearday" }
+    { swap
+        foreach
+            swap timevar array_getitem ( Zip these up into a dictionary array )
+        repeat
+    }dict timevar !
+    ( Correct some incompatibility. Weekday starts at 1 instead of 0 like it should. )
+    timevar @ "weekday" timevar @ "weekday" array_getitem -- array_setitem
+;
+
+: ctell ( s -- ) ( Emits a message if the player is valid, otherwise discards it. )
+    me @ ok? not if
+        exit
+    then
+    me @ swap notify
 ;
 
 : split_once[ str:target str:delimiter -- {} ]  ( Like strcut, but splits at a delimiter once, eliminating it. )
@@ -77,8 +126,8 @@ lvar MONTHS
 : dash_parse[ str:cmd -- @:test ] ( Parses notations like "2-6" )
     var start_digit
     var end_digit
-    cmd @ "[[:digit:]]+-[[:digit:]]+" REG_ICASE regexp and not if
-        "Invalid dash notation -- " cmd @ strcat abort
+    cmd @ "^[[:digit:]]+-[[:digit:]]+$" REG_ICASE regexp and not if
+        { "Invalid dash notation -- '" cmd @ "'" }cat abort
     then
     cmd @ "-" split_once end_digit ! start_digit !
     { "-" start_digit @ atoi end_digit @ atoi }list
@@ -87,17 +136,50 @@ lvar MONTHS
 
 : slash_parse[ str:cmd -- @:test ] ( Parses notations like "*/4" )
     var interval
-    cmd @ "[*0]/[[:digit:]]+" REG_ICASE regexp and not if
-        "Invalid slash notation -- " cmd @ strcat abort
+    cmd @ "^[*0]/[[:digit:]]+$" REG_ICASE regexp and not if
+        { "Invalid slash notation -- '" cmd @ "'" }cat abort
     then
     cmd @ "/" split_once swap pop interval !
     { "/" interval @ atoi }list
 ;
 
-: parse_minute[ str:minute_string -- str:"minute" @:minute_tests ]
+: w_parse[ str:cmd -- @:test ]
+    var interval
+    cmd @ "^[[:digit:]]+W$" REG_ICASE regexp and not if
+        { "Invalid W notation -- '" cmd @ "'" }cat abort
+    then
+    cmd @ toupper "W" split_once swap pop interval !
+    { "W" interval @ atoi }list
+;
+
+: l_parse[ str:cmd -- @:test ]
+    var interval
+    cmd @ "^[[:digit:]]+L$" REG_ICASE regexp and not if
+        { "Invalid L notation -- '" cmd @ "'" }cat abort
+    then
+    cmd @ toupper "L" split_once swap pop interval !
+    { "L" interval @ atoi }list
+;
+
+: hash_parse[ str:cmd -- @:test ]
+    var interval
+    cmd @ "^[[:digit:]]+#$" REG_ICASE regexp and not if
+        { "Invalid # notation -- '" cmd @ "'" }cat abort
+    then
+    cmd @ toupper "#" split_once swap pop interval !
+    { "#" interval @ atoi }list
+;
+
+: dict_sub[ str:source_string dict:subst_dict -- str:processed_string ] ( Does a set of substitutions based on a dictionary )
+    subst_dict @ foreach
+        source_string @ -3 rotate REG_ICASE REG_ALL + regsub source_string !
+    repeat
+    source_string @
+;
+
+: parser[ str:time_type str:raw_time_string str:time_string bool:w_permitted? bool:l_permitted? bool:hash_permitted? -- @:time_tests ]
     var item
-    "minute"
-    { minute_string @ "," explode array_make
+    { time_string @ "," explode array_make
       foreach
           item ! pop
           item @ case
@@ -108,35 +190,67 @@ lvar MONTHS
                   { "*" }list
               end
               "-" instr when
-                  dash_parse
+                  item @ dash_parse
               end
-              "[[:digit:]]+" REG_ICASE regexp and when
+              "^[[:digit:]]+$" REG_ICASE regexp and when
                   { "digit" item @ atoi }list
               end
-              default "Invalid syntax for minute -- " item @ strcat abort end
+              "W" instring when
+                  w_permitted? @ if
+                      item @ w_parse
+                  else
+                      { "W not permitted in " time_type @ " field." }cat abort
+                  then
+              end
+              "L" instring when
+                  l_permitted? @ if
+                      item @ l_parse
+                  else
+                      { "L not permitted in " time_type @ " field." }cat abort
+                  then
+              end
+              "#" instring when
+                  hash_permitted? @ if
+                      item @ hash_parse
+                  else
+                      { "# not permitted in " time_type @ " field." }cat abort
+                  then
+              end
+              default { "Invalid syntax for " time_type @ " -- '" item @ "'" }cat abort end
           endcase
       repeat
     }list
 ;
 
-: parse_hour[ str:hour_string -- str:"hour" @:day_tests ]
-    "hour" { }list
+: parse_minute[ str:minute_string -- str:"minute" @:minute_tests ] ( Parses the minute notation )
+    "minute" dup minute_string @ dup FALSE FALSE FALSE parser
 ;
 
-: parse_day[ str:day_string -- str:"day" @:day_tests ]
-    "day" { }list
+: parse_hour[ str:hour_string -- str:"hour" @:day_tests ]
+    "hour" dup hour_string @ dup FALSE FALSE FALSE parser
+;
+
+: parse_monthday[ str:monthday_string -- str:"day" @:day_tests ]
+    "monthday" dup monthday_string @ dup TRUE TRUE FALSE parser
 ;
 
 : parse_month[ str:month_string -- str:"month" @:month_tests ]
-    "month" { }list
+    "month" dup month_string @ dup MONTHS @ dict_sub FALSE FALSE FALSE parser
 ;
 
-: parse_year[ str:year_string -- str:"year" @:year_tests ]
-    "month" { }list
+: parse_weekday[ str:weekday_string -- str:"year" @:year_tests ]
+    "weekday" dup weekday_string @ dup WEEKDAYS @ dict_sub TRUE FALSE TRUE parser
 ;
 
 : parse_target[ str:target_string -- "target" @:target_spec ]
-    "target" { }list
+    "target"
+    var target
+    target_string @ match target !
+    target @ ok? target @ program? and not if
+        { "Command ambiguous, invalid or nonexistant. String was '" target_string @
+          "', match output was: " target @ unparseobj }cat abort
+    then
+    { target @ }list
 ;
 
 : line_to_spec[ str:line -- array:cronitem ]
@@ -151,11 +265,15 @@ lvar MONTHS
     var year
     var target
     var argument
-    
-    line @ "|" split_once argument ! line ! ( Separate the argument from the rest of the cron tab )
+    var compiled_line
+
+    ( Separate the argument from the rest of the cron tab )
+    line @ "|" split_once argument ! line !
+
+    line @ PRESETS @ dict_sub line !
 
     { 
-      'parse_minute 'parse_hour 'parse_day 'parse_month 'parse_year 'parse_target 
+      'parse_minute 'parse_hour 'parse_monthday 'parse_month 'parse_weekday 'parse_target 
     }list var! parsetable
 
 
@@ -177,25 +295,111 @@ lvar MONTHS
               parsetable @ count @ array_getitem execute
           repeat
         
-    }dict
+    }dict compiled_line !
+    compiled_line @ "target" array_getitem argument @ swap array_appenditem
+    compiled_line @ "target" array_setitem
 ;
 
-: tab_load ( -- ) ( Runs through the crontab and parses it )
+: crontab_load ( -- ) ( Runs through the crontab and parses it )
     var raw_crontab
-    var compiled_crontab
     var line
+    var count
     var error
     set_constants
-    "Loading crontab..." .tell
+    "Loading crontab..." ctell
     EDEN CRONTAB array_get_proplist raw_crontab !
     { raw_crontab @ foreach
-        swap line !
+        swap pop
+        count @ ++ count !
         1 try
             line_to_spec
         catch
-            error ! { "Error parsing line " line @ ++ ": " error @ }cat .tell
+            error ! { "Error parsing line " count @ ": " error @ }cat ctell
         endcatch
      repeat
     }list compiled_crontab !
-    "Crontab loaded." .tell
+    "Crontab loaded." ctell
+;
+
+: star[ str:time_type int:currentt_value str:star_string -- bool:TRUE ] ( Returns true. Star is always true. )
+    TRUE
+;
+
+: slash[ str:time_type int_current_value int:interval -- bool:result ] ( Runs a / test. )
+    
+;
+
+: launch_progs
+    compiled_crobtab @ time_tests
+    foreach
+        fork not if
+            continue
+        then
+        swap dup run_tests if
+            "target" array_getitem
+            array_vals try
+                swap call
+            catch ( Remember to fill this in properly later. -Kel )
+                pop
+            endcatch
+        else
+            pop
+        then
+    repeat
+;
+
+: main_loop ( -- ) ( Main loop for the cron process )
+    var oldme
+    prog CRONPID pid setprop
+    crontab_load
+    "Cron start." ctell
+    background
+    begin
+        fork not if
+            60 timer_start "Minute"
+            begin
+                event_wait
+                case
+                    "Minute" smatch when
+                        pop break
+                    end
+                    "Reload" smatch when
+                        me @ oldme ! ( Reloader may be different. )
+                        "player" array_getitem me ! crontab_load
+                        oldme @ me !
+                    end
+                endcase
+            repeat
+        else
+            launch_progs exit
+        then
+    repeat
+;
+
+: main
+    "me" match me !
+
+    me @ wizard flag? and me @ FATE controls and not if
+        "Permission denied." ctell
+    then
+
+    trigger @ "Queued Event." strcmp not if
+        init exit
+    then
+
+    command @ case 
+        "#r*" smatch when
+            live_reload 
+        end
+        "#e*" smatch when
+            edit_crontab
+        end
+        "#sta*" smatch when
+            manual_init
+        end
+        "#sto*" smatch when
+            stop
+        end
+        default "Command not recognized: " command @ strcat ctell end
+    endcase
 ;
