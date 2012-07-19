@@ -59,10 +59,35 @@ $else
     "W"
 $endif
 
+$def JAN 1
+$def FEB 2
+$def MAR 3
+$def APR 4
+$def MAY 5
+$def JUN 6
+$def JUL 7
+$def AUG 8
+$def SEP 9
+$def OCT 10
+$def NOV 11
+$def DEC 12
+
+$def SUN 1
+$def MON 2
+$def TUE 3
+$def WED 4
+$def THU 5
+$def FRI 6
+$def SAT 7
+
 lvar WEEKDAYS
 lvar MONTHS
 lvar PRESETS
 lvar compiled_crontab
+lvar DAYS_IN_MONTHS
+lvar current_monthdays
+lvar current_time
+lvar last_year
 
 : set_constants ( -- ) ( sets more complex 'constants' )
      { "MON" "1"
@@ -73,6 +98,7 @@ lvar compiled_crontab
        "SAT" "6"
        "SUN" "7" }dict WEEKDAYS !
 
+     ( For string substitution )
      { "JAN" "1"
        "FEB" "2"
        "MAR" "3"
@@ -85,6 +111,20 @@ lvar compiled_crontab
        "OCT" "10"
        "NOV" "11"
        "DEC" "12" }dict MONTHS !
+
+     ( For math )
+     { JAN 31
+       FEB 28 ( To be modified later, in some cases. )
+       MAR 31
+       APR 30
+       MAY 31
+       JUN 30
+       JUL 31
+       AUG 31
+       SEP 30
+       OCT 31
+       NOV 30
+       DEC 31 }dict DAYS_IN_MONTHS !
 
      { "^([[:space:]]+)?@anually" "0 0 1 1 *"
        "^([[:space:]]+)?@monthly" "0 0 1 * *"
@@ -103,7 +143,8 @@ lvar compiled_crontab
         repeat
     }dict timevar !
     ( Correct some incompatibility. Weekday starts at 1 instead of 0 like it should. )
-    timevar @ "weekday" timevar @ "weekday" array_getitem -- array_setitem
+    timevar @ "weekday" timevar @ "weekday" array_getitem -- array_setitem current_time !
+    
 ;
 
 : ctell ( s -- ) ( Emits a message if the player is valid, otherwise discards it. )
@@ -111,6 +152,30 @@ lvar compiled_crontab
         exit
     then
     me @ swap notify
+;
+
+: month_days_set ( This has to be a function due to leap years. )
+    var year
+    current_time @ "year" array_getitem year !
+    ( Leap years are screwwy. )
+    year @ 4 % not if
+        year @ 100 % not if
+            year @ 400 % not if
+                TRUE
+            else
+                FALSE
+            then
+        else
+            TRUE
+        then
+    else
+        FALSE
+    then
+    if
+        DAYS_IN_MONTHS FEB 29 array_setitem current_monthdays !
+    else
+        DAYS_IN_MONTHS current_monthdays !
+    then
 ;
 
 : split_once[ str:target str:delimiter -- {} ]  ( Like strcut, but splits at a delimiter once, eliminating it. )
@@ -130,7 +195,7 @@ lvar compiled_crontab
         { "Invalid dash notation -- '" cmd @ "'" }cat abort
     then
     cmd @ "-" split_once end_digit ! start_digit !
-    { "-" start_digit @ atoi end_digit @ atoi }list
+    { start_digit @ atoi end_digit @ atoi "-" }list
     
 ;
 
@@ -140,7 +205,7 @@ lvar compiled_crontab
         { "Invalid slash notation -- '" cmd @ "'" }cat abort
     then
     cmd @ "/" split_once swap pop interval !
-    { "/" interval @ atoi }list
+    { interval @ atoi "/" }list
 ;
 
 : w_parse[ str:cmd -- @:test ]
@@ -149,7 +214,7 @@ lvar compiled_crontab
         { "Invalid W notation -- '" cmd @ "'" }cat abort
     then
     cmd @ toupper "W" split_once swap pop interval !
-    { "W" interval @ atoi }list
+    { interval @ atoi "W" }list
 ;
 
 : l_parse[ str:cmd -- @:test ]
@@ -158,16 +223,7 @@ lvar compiled_crontab
         { "Invalid L notation -- '" cmd @ "'" }cat abort
     then
     cmd @ toupper "L" split_once swap pop interval !
-    { "L" interval @ atoi }list
-;
-
-: hash_parse[ str:cmd -- @:test ]
-    var interval
-    cmd @ "^[[:digit:]]+#$" REG_ICASE regexp and not if
-        { "Invalid # notation -- '" cmd @ "'" }cat abort
-    then
-    cmd @ toupper "#" split_once swap pop interval !
-    { "#" interval @ atoi }list
+    { interval @ atoi "L" }list
 ;
 
 : dict_sub[ str:source_string dict:subst_dict -- str:processed_string ] ( Does a set of substitutions based on a dictionary )
@@ -177,7 +233,7 @@ lvar compiled_crontab
     source_string @
 ;
 
-: parser[ str:time_type str:raw_time_string str:time_string bool:w_permitted? bool:l_permitted? bool:hash_permitted? -- @:time_tests ]
+: parser[ str:time_type str:raw_time_string str:time_string bool:w_permitted? bool:l_permitted? -- @:time_tests ]
     var item
     { time_string @ "," explode array_make
       foreach
@@ -207,13 +263,6 @@ lvar compiled_crontab
                       item @ l_parse
                   else
                       { "L not permitted in " time_type @ " field." }cat abort
-                  then
-              end
-              "#" instring when
-                  hash_permitted? @ if
-                      item @ hash_parse
-                  else
-                      { "# not permitted in " time_type @ " field." }cat abort
                   then
               end
               default { "Invalid syntax for " time_type @ " -- '" item @ "'" }cat abort end
@@ -321,12 +370,30 @@ lvar compiled_crontab
     "Crontab loaded." ctell
 ;
 
-: star[ str:time_type int:currentt_value str:star_string -- bool:TRUE ] ( Returns true. Star is always true. )
-    TRUE
+: w[ str:time_type int: ]
+    
 ;
 
-: slash[ str:time_type int_current_value int:interval -- bool:result ] ( Runs a / test. )
-    
+: dash[ str:time_type int:begin_number int:end_number -- bool:result ]
+    var this_time
+    current_time @ time_type array_getitem this_time !
+    this_time @ begin_number <= this_time @ end_number @ >= and if
+        TRUE
+    else
+        FALSE
+    then
+;
+
+: slash[ str:time_type int:interval -- bool:result ] ( Runs a / test. )
+    current_time @ time_type array_getitem interval @ % not if
+        TRUE
+    else
+        FALSE
+    then
+;
+
+: star[ str:time_type -- bool:TRUE ] ( Returns true. Star is always true. )
+    TRUE
 ;
 
 : launch_progs
