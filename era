@@ -85,7 +85,7 @@ lvar MONTHS
 lvar PRESETS
 lvar compiled_crontab
 lvar DAYS_IN_MONTHS
-lvar current_monthdays
+lvar this_years_monthdays
 lvar current_time
 lvar last_year
 
@@ -172,9 +172,9 @@ lvar last_year
         FALSE
     then
     if
-        DAYS_IN_MONTHS FEB 29 array_setitem current_monthdays !
+        DAYS_IN_MONTHS FEB 29 array_setitem this_years__monthdays !
     else
-        DAYS_IN_MONTHS current_monthdays !
+        DAYS_IN_MONTHS this_years_monthdays !
     then
 ;
 
@@ -370,8 +370,89 @@ lvar last_year
     "Crontab loaded." ctell
 ;
 
-: w[ str:time_type int: ]
-    
+: weekday?[ int:day ] ( Checks if a number represents a weekday. )
+    day @ MON >= day @ FRI <= if
+        TRUE
+    else
+        FALSE
+    then
+;
+
+: border_date_check[int:month_maxdays int:date_to_check] ( Checks if a date is beyond month bounds. )
+    date_to_check @ 1 < date_to_check @ month_maxdays > or if
+        FALSE
+    else
+        TRUE
+    then
+;
+
+: w[ str:time_type int:day_of_month ] ( Execute on closest weekday )
+    var current_day
+    var current_day_of_month
+    var current_month
+    var this_months_maxdays
+    var difference
+    var target_actual_weekday
+    var guess
+    current_time @ "monthday" array_getitem current_day_of_month !
+    current_time @ "weekday" array_getitem current_day !
+    ( Simple scenario. Date is today, today is a weekday )
+    day_of_month @ current_day_of_month @ = if
+        current_day @ weekday? if
+            TRUE exit
+        then
+    then
+    ( If it's not a Monday or Friday, it's not the closest day. )
+    current_day_of_week @ MON = current_day_of_week @ FRI = or if
+        FALSE exit
+    then
+    ( A candidate weekday is never more than 2 days away. )
+    current_day_of_month @ day_of_month @ - abs 2 > if
+        FALSE exit
+    then
+    ( Get how many days are in the current month. Don't want to jump
+      month boundaries. )
+    this_years_monthdays @ current_time @ "month" array_getitem
+    array_getitem this_months_maxdays !
+    ( Get day of week of target date )
+    day_of_month @ current_day_of_month @ - difference !
+    current_day_of_week @ difference @ + target_actual_weekday !
+    target_actual_weekday @ SAT > if ( More than a week? Roll over. )
+        target_actual_weekday SAT - target_actual_weekday !
+    then
+    target_actual_weekday @ MON < if ( Less than a week? Roll the other way. )
+        target_actual_weekday SAT + target_actual_weekday !
+    then
+    ( Saturdays are closest to Fridays. One day lower. )
+    target_actual_weekday @ SAT = if
+        day_of_month 1 - guess !
+        this_months_maxdays @ guess @ border_date_check not if
+            guess @ current_day_of_month @ = if
+                TRUE exit
+            else
+                FALSE exit
+            then
+        guess @ 2 + current_day_of_month = if ( Next Monday, then )
+            TRUE exit
+        else
+            FALSE exit
+        then
+    then
+    ( Sundats are closest to Mondays. One day higher. )
+    target_actual_weekday @ SUN = if
+        day_of_month 1 + guess !
+        this_months_maxdays @ guess @ border_date_check not if
+            guess @ current_day_of_month @ = if
+                TRUE exit
+            else
+                FALSE exit
+            then
+        guess @ 2 - current_day_of_month = if ( Last Friday, then )
+            TRUE exit
+        else
+            FALSE exit
+        then
+    then
 ;
 
 : dash[ str:time_type int:begin_number int:end_number -- bool:result ]
