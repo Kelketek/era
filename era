@@ -59,6 +59,8 @@ $else
     "W"
 $endif
 
+$def UNDEFINED -1
+
 $def JAN 1
 $def FEB 2
 $def MAR 3
@@ -80,6 +82,8 @@ $def THU 5
 $def FRI 6
 $def SAT 7
 
+$def DAYS_IN_WEEK 7
+
 lvar WEEKDAYS
 lvar MONTHS
 lvar PRESETS
@@ -96,7 +100,7 @@ lvar last_year
        "THU" "4"
        "FRI" "5"
        "SAT" "6"
-       "SUN" "7" }dict WEEKDAYS !
+       "SUN" "7" }dict DAYS_OF_WEEK !
 
      ( For string substitution )
      { "JAN" "1"
@@ -136,14 +140,14 @@ lvar last_year
 : get_time ( -- @ ) ( Gets the current time, puts it into a workable arrray. )
     { timesplit } var! timevar
     ( We won't be using all of these. )
-    { "seconds" "minutes" "hours" "monthday" "month" "year" "weekday" "yearday" }
+    { "seconds" "minutes" "hours" "monthday" "month" "year" "day_of_week" "yearday" }
     { swap
         foreach
             swap timevar array_getitem ( Zip these up into a dictionary array )
         repeat
     }dict timevar !
-    ( Correct some incompatibility. Weekday starts at 1 instead of 0 like it should. )
-    timevar @ "weekday" timevar @ "weekday" array_getitem -- array_setitem current_time !
+    ( Correct some incompatibility. Day_of_week starts at 1 instead of 0 like it should. )
+    timevar @ "day_of_week" timevar @ "day_of_week" array_getitem -- array_setitem current_time !
     
 ;
 
@@ -219,11 +223,15 @@ lvar last_year
 
 : l_parse[ str:cmd -- @:test ]
     var interval
-    cmd @ "^[[:digit:]]+L$" REG_ICASE regexp and not if
+    cmd @ "^[[:digit:]]+L$" REG_ICASE regexp and if
         { "Invalid L notation -- '" cmd @ "'" }cat abort
+        cmd @ toupper "L" split_once swap pop interval !
+        { interval @ atoi "L" }list exit
     then
-    cmd @ toupper "L" split_once swap pop interval !
-    { interval @ atoi "L" }list
+    cmd @ toupper "L" strcmp not if
+        { UNDEFINED "L" }list exit
+    then
+    { "Invalid L notation -- '" cmd @ "'" }cat abort
 ;
 
 : dict_sub[ str:source_string dict:subst_dict -- str:processed_string ] ( Does a set of substitutions based on a dictionary )
@@ -287,8 +295,8 @@ lvar last_year
     "month" dup month_string @ dup MONTHS @ dict_sub FALSE FALSE FALSE parser
 ;
 
-: parse_weekday[ str:weekday_string -- str:"year" @:year_tests ]
-    "weekday" dup weekday_string @ dup WEEKDAYS @ dict_sub TRUE FALSE TRUE parser
+: parse_day_of_week[ str:day_of_week_string -- str:"year" @:year_tests ]
+    "day_of_week" dup day_of_week_string @ dup WEEKDAYS @ dict_sub TRUE FALSE TRUE parser
 ;
 
 : parse_target[ str:target_string -- "target" @:target_spec ]
@@ -309,7 +317,7 @@ lvar last_year
     var count
     var minute
     var hour
-    var weekday
+    var day_of_week
     var month
     var year
     var target
@@ -322,7 +330,7 @@ lvar last_year
     line @ PRESETS @ dict_sub line !
 
     { 
-      'parse_minute 'parse_hour 'parse_monthday 'parse_month 'parse_weekday 'parse_target 
+      'parse_minute 'parse_hour 'parse_monthday 'parse_month 'parse_day_of_week 'parse_target 
     }list var! parsetable
 
 
@@ -370,6 +378,10 @@ lvar last_year
     "Crontab loaded." ctell
 ;
 
+: get_current_monthdays ( -- i )
+    this_years_monthdays @ current_time @ "month" array_getitem array_getitem
+;
+
 : weekday?[ int:day ] ( Checks if a number represents a weekday. )
     day @ MON >= day @ FRI <= if
         TRUE
@@ -378,24 +390,25 @@ lvar last_year
     then
 ;
 
-: border_date_check[int:month_maxdays int:date_to_check] ( Checks if a date is beyond month bounds. )
-    date_to_check @ 1 < date_to_check @ month_maxdays > or if
-        FALSE
-    else
+: date_beyond_monthborder?[int:date_to_check] ( Checks if a date is beyond month bounds. )
+    date_to_check @ 1 < date_to_check @ get_current_monthdays > or if
         TRUE
+    else
+        FALSE
     then
 ;
 
-: w[ str:time_type int:day_of_month ] ( Execute on closest weekday )
+: W[ str:time_type int:day_of_month -- bool:result ] ( Execute on closest weekday )
     var current_day
     var current_day_of_month
     var current_month
     var this_months_maxdays
     var difference
     var target_actual_weekday
+    var shift
     var guess
     current_time @ "monthday" array_getitem current_day_of_month !
-    current_time @ "weekday" array_getitem current_day !
+    current_time @ "day_of_week" array_getitem current_day !
     ( Simple scenario. Date is today, today is a weekday )
     day_of_month @ current_day_of_month @ = if
         current_day @ weekday? if
@@ -410,48 +423,76 @@ lvar last_year
     current_day_of_month @ day_of_month @ - abs 2 > if
         FALSE exit
     then
-    ( Get how many days are in the current month. Don't want to jump
-      month boundaries. )
-    this_years_monthdays @ current_time @ "month" array_getitem
-    array_getitem this_months_maxdays !
     ( Get day of week of target date )
     day_of_month @ current_day_of_month @ - difference !
     current_day_of_week @ difference @ + target_actual_weekday !
-    target_actual_weekday @ SAT > if ( More than a week? Roll over. )
-        target_actual_weekday SAT - target_actual_weekday !
+    target_actual_day_of_week @ DAYS_IN_WEEK > if ( More than a week? Roll over. )
+        target_actual_day_of_week SAT - target_actual_day_of_week !
     then
-    target_actual_weekday @ MON < if ( Less than a week? Roll the other way. )
-        target_actual_weekday SAT + target_actual_weekday !
+    target_actual_day_of_week @ SUN < if ( Before Sunday? Roll the other way. )
+        target_actual_day_of_week SAT + target_actual_day_of_week !
     then
     ( Saturdays are closest to Fridays. One day lower. )
-    target_actual_weekday @ SAT = if
-        day_of_month 1 - guess !
-        this_months_maxdays @ guess @ border_date_check not if
-            guess @ current_day_of_month @ = if
-                TRUE exit
-            else
-                FALSE exit
-            then
-        guess @ 2 + current_day_of_month = if ( Next Monday, then )
+    ( Sundays are closest to Mondays. One day higher. )
+    target_actual_day_of_week @ SAT = if
+        -1 shift !
+    else
+        1 shift !
+    then
+    day_of_month @ shift @ + guess !
+    guess @ date_beyond_monthborder? if
+        guess @ current_day_of_month @ = if
+            TRUE exit
+        else
+            FALSE exit
+        then
+        ( If it's Saturday and Friday is not in the month, Monday. )
+        ( If it's Sunday, and Monday is not in the month, Friday. )
+        shift @ 0 < if
+            guess @ 2 + guess !
+        else
+            guess @ 2 - guess !
+        then
+        guess @ current_day_of_month = if
             TRUE exit
         else
             FALSE exit
         then
     then
-    ( Sundats are closest to Mondays. One day higher. )
-    target_actual_weekday @ SUN = if
-        day_of_month 1 + guess !
-        this_months_maxdays @ guess @ border_date_check not if
-            guess @ current_day_of_month @ = if
-                TRUE exit
-            else
-                FALSE exit
-            then
-        guess @ 2 - current_day_of_month = if ( Last Friday, then )
+;
+
+: L[ str:time_type int:day -- bool:result ]
+    var current_day_of_week
+    ( If this is for the month field, check if this is the
+      last day of the month. )
+    time_type @ if "month" strcmp not if
+        get_current_monthdays day @ = if
             TRUE exit
         else
             FALSE exit
         then
+    then
+    ( If this is in the day_of_week field and there is no
+      day defined, do it on the last day of the week. )
+    current_time @ "day_of_week" array_getitem current_day_of_week !
+    day @ UNDEFINED = if
+        current_day_of_week @ SAT = if
+            TRUE exit
+        else
+            FALSE exit
+        then
+    then
+
+    ( If it's not the day of week we want, it's not relevant. )
+    current_day_of_week @ day @ = not if
+        exit
+    then
+    ( Is it the last time this day of week appears this month? )
+    current_time @ "day_of_month" array_getitem DAYS_IN_WEEK +
+    date_beyond_monthborder? if
+        TRUE exit
+    else
+        FALSE exit
     then
 ;
 
