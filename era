@@ -87,7 +87,6 @@ $def SAT 7
 
 $def DAYS_IN_WEEK 7
 
-lvar WEEKDAYS
 lvar MONTHS
 lvar PRESETS
 lvar DAYS_IN_MONTHS
@@ -289,23 +288,23 @@ lvar parser_address
 ;
 
 : parse_minute[ str:minute_string -- str:"minute" @:minute_tests ] ( Parses the minute notation )
-    "minute" dup minute_string @ dup FALSE FALSE FALSE parser
+    "minute" dup minute_string @ dup FALSE FALSE parser
 ;
 
 : parse_hour[ str:hour_string -- str:"hour" @:day_tests ]
-    "hour" dup hour_string @ dup FALSE FALSE FALSE parser
+    "hour" dup hour_string @ dup FALSE FALSE parser
 ;
 
 : parse_monthday[ str:monthday_string -- str:"day" @:day_tests ]
-    "monthday" dup monthday_string @ dup TRUE TRUE FALSE parser
+    "monthday" dup monthday_string @ dup TRUE TRUE parser
 ;
 
 : parse_month[ str:month_string -- str:"month" @:month_tests ]
-    "month" dup month_string @ dup MONTHS @ dict_sub FALSE FALSE FALSE parser
+    "month" dup month_string @ dup MONTHS @ dict_sub FALSE FALSE parser
 ;
 
 : parse_day_of_week[ str:day_of_week_string -- str:"year" @:year_tests ]
-    "day_of_week" dup day_of_week_string @ dup WEEKDAYS @ dict_sub TRUE FALSE TRUE parser
+    "day_of_week" dup day_of_week_string @ dup DAYS_OF_WEEK @ dict_sub TRUE FALSE parser
 ;
 
 : parse_target[ str:target_string -- "target" @:target_spec ]
@@ -581,30 +580,40 @@ lvar parser_address
     repeat
 ;
 
+: get_pid
+    prog CRONPID getpropstr atoi
+;
+
 : main_loop ( -- ) ( Main loop for the cron process )
     var oldme
     set_constants
     generate_command_keys
+    get_pid ispid? if
+        "Cron already running. Aborted." ctell exit
+    then
     prog CRONPID pid intostr setprop
     crontab_load
     "Cron start." ctell
     background
     begin
-        fork not if
+        fork if
             begin
                 60 "Minute" timer_start
                 event_wait
                 case
-                    "Minute" smatch when
+                    "TIMER.Minute" smatch when
                         pop break
                     end
-                    "Reload" smatch when
+                    "USER.Reload" smatch when
                         me @ oldme ! ( Reloader may be different. )
                         "player" array_getitem me ! crontab_load
                         oldme @ me !
                     end
-                    "Stop" smatch when
+                    "USER.Stop" smatch when
                         exit
+                    end
+                    default
+                        pop
                     end
                 endcase
             repeat
@@ -626,7 +635,13 @@ lvar parser_address
 : live_reload
     0 try
         "Sending reload signal..." ctell
-        prog CRONPID getpropstr atoi "Reload" TRUE event_send
+        get_pid var! this_pid
+        this_pid @ ispid? if
+            this_pid @ "Reload" TRUE event_send
+        else
+            "Cron process not running!" abort
+        then
+        "Reload signal sent." ctell
     catch
         "Reload signal failed! Error: " swap strcat ctell
     endcatch
@@ -636,7 +651,7 @@ lvar parser_address
 : edit_crontab
     FATE CRONTAB array_get_proplist array_vals EDITOR "end" stringcmp not if ( Save the list. )
         "Installing new crontab..." ctell
-        array_make FATE CRONTAB -3 rotate array_put_proplist
+        array_make FATE CRONTAB rot array_put_proplist
         "Crontab installed." ctell
         live_reload
     else
@@ -646,8 +661,13 @@ lvar parser_address
 
 : stop
     0 try
+        get_pid var! this_pid
+        this_pid @ ispid? not if
+            "Process not running!" abort
+        then
         "Sending stop signal..." ctell
-        prog CRONPID getpropstr atoi "Reload" TRUE event_send
+        prog CRONPID getpropstr atoi "Stop" TRUE event_send
+        "Stop signal sent." ctell
     catch
         "Stop signal failed! Error: " swap strcat ctell
     endcatch
