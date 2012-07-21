@@ -42,6 +42,9 @@ prerogative.
   [INCLUDING NEGLIGENCE OR OTHERWISE] ARISING IN ANY WAY OUT OF THE USE OF THIS
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. )
 
+$include $lib/editor
+$include $lib/case
+
 $def TRUE 1
 $def FALSE 0
 $def INVALID #-1
@@ -53,10 +56,10 @@ $def CRONPID CRONDIR "/pid" strcat ( Location of PID number )
 Minute, Hour, Day of Week, Month, Year, and the command )
 $def CRON_SEGMENTS 6
 $def TEST_TYPE 0 ( The test type is the first item in a list array )
-$ifdef __neon wizard
-    "W" "wizhidden_level" sysparm intostr strcat
+$ifdef __neon
+    $def wizard "W" "wizhidden_level" sysparm intostr strcat
 $else
-    "W"
+    $def wizard "W"
 $endif
 
 $def UNDEFINED -1
@@ -87,11 +90,14 @@ $def DAYS_IN_WEEK 7
 lvar WEEKDAYS
 lvar MONTHS
 lvar PRESETS
-lvar compiled_crontab
 lvar DAYS_IN_MONTHS
+lvar DAYS_OF_WEEK
+lvar COMMAND_KEYS
+lvar compiled_crontab
 lvar this_years_monthdays
 lvar current_time
 lvar last_year
+lvar parser_address
 
 : set_constants ( -- ) ( sets more complex 'constants' )
      { "MON" "1"
@@ -176,7 +182,7 @@ lvar last_year
         FALSE
     then
     if
-        DAYS_IN_MONTHS FEB 29 array_setitem this_years__monthdays !
+        DAYS_IN_MONTHS FEB 29 array_setitem this_years_monthdays !
     else
         DAYS_IN_MONTHS this_years_monthdays !
     then
@@ -192,7 +198,7 @@ lvar last_year
     then
 ;
 
-: dash_parse[ str:cmd -- @:test ] ( Parses notations like "2-6" )
+: dash_parse[ str:raw_string str:cmd -- @:test ] ( Parses notations like "2-6" )
     var start_digit
     var end_digit
     cmd @ "^[[:digit:]]+-[[:digit:]]+$" REG_ICASE regexp and not if
@@ -203,16 +209,18 @@ lvar last_year
     
 ;
 
-: slash_parse[ str:cmd -- @:test ] ( Parses notations like "*/4" )
+: slash_parse[ str:raw_string str:cmd -- @:test ] ( Parses notations like "*/4" )
     var interval
-    cmd @ "^[*0]/[[:digit:]]+$" REG_ICASE regexp and not if
+    cmd @ "^[^/]*/[[:digit:]]+$" REG_ICASE regexp and not if
         { "Invalid slash notation -- '" cmd @ "'" }cat abort
     then
-    cmd @ "/" split_once swap pop interval !
-    { interval @ atoi "/" }list
+    cmd @ "/" split_once swap interval !
+    {   swap "Slash" swap dup FALSE FALSE parser_address @ execute ( The slash operator can have other operators as the numerator. )
+        interval @ atoi "/"                                        ( This address hack due to interdependence. )
+    }list
 ;
 
-: w_parse[ str:cmd -- @:test ]
+: w_parse[ str:raw_string str:cmd -- @:test ]
     var interval
     cmd @ "^[[:digit:]]+W$" REG_ICASE regexp and not if
         { "Invalid W notation -- '" cmd @ "'" }cat abort
@@ -221,17 +229,17 @@ lvar last_year
     { interval @ atoi "W" }list
 ;
 
-: l_parse[ str:cmd -- @:test ]
+: l_parse[  str:raw_string str:cmd -- @:test ]
     var interval
     cmd @ "^[[:digit:]]+L$" REG_ICASE regexp and if
-        { "Invalid L notation -- '" cmd @ "'" }cat abort
+        { "Invalid L notation -- '" raw_string @ "'" }cat abort
         cmd @ toupper "L" split_once swap pop interval !
         { interval @ atoi "L" }list exit
     then
     cmd @ toupper "L" strcmp not if
         { UNDEFINED "L" }list exit
     then
-    { "Invalid L notation -- '" cmd @ "'" }cat abort
+    { "Invalid L notation -- '" raw_string @ "'" }cat abort
 ;
 
 : dict_sub[ str:source_string dict:subst_dict -- str:processed_string ] ( Does a set of substitutions based on a dictionary )
@@ -243,32 +251,33 @@ lvar last_year
 
 : parser[ str:time_type str:raw_time_string str:time_string bool:w_permitted? bool:l_permitted? -- @:time_tests ]
     var item
+    'parser parser_address !
     { time_string @ "," explode array_make
       foreach
           item ! pop
           item @ case
               "/" instr when
-                  item @ slash_parse
+                  raw_time_string @ item @ slash_parse
               end
               "*" strcmp not when
                   { "*" }list
               end
               "-" instr when
-                  item @ dash_parse
+                  raw_time_string @ item @ dash_parse
               end
               "^[[:digit:]]+$" REG_ICASE regexp and when
                   { "digit" item @ atoi }list
               end
               "W" instring when
                   w_permitted? @ if
-                      item @ w_parse
+                      raw_time_string @ item @ w_parse
                   else
                       { "W not permitted in " time_type @ " field." }cat abort
                   then
               end
               "L" instring when
                   l_permitted? @ if
-                      item @ l_parse
+                      raw_time_string @ item @ l_parse
                   else
                       { "L not permitted in " time_type @ " field." }cat abort
                   then
@@ -364,7 +373,7 @@ lvar last_year
     var error
     set_constants
     "Loading crontab..." ctell
-    EDEN CRONTAB array_get_proplist raw_crontab !
+    FATE CRONTAB array_get_proplist raw_crontab !
     { raw_crontab @ foreach
         swap pop
         count @ ++ count !
@@ -390,7 +399,7 @@ lvar last_year
     then
 ;
 
-: date_beyond_monthborder?[int:date_to_check] ( Checks if a date is beyond month bounds. )
+: date_beyond_monthborder?[ int:date_to_check ] ( Checks if a date is beyond month bounds. )
     date_to_check @ 1 < date_to_check @ get_current_monthdays > or if
         TRUE
     else
@@ -401,10 +410,11 @@ lvar last_year
 : W[ str:time_type int:day_of_month -- bool:result ] ( Execute on closest weekday )
     var current_day
     var current_day_of_month
+    var current_day_of_week
     var current_month
     var this_months_maxdays
     var difference
-    var target_actual_weekday
+    var target_actual_day_of_week
     var shift
     var guess
     current_time @ "monthday" array_getitem current_day_of_month !
@@ -425,7 +435,7 @@ lvar last_year
     then
     ( Get day of week of target date )
     day_of_month @ current_day_of_month @ - difference !
-    current_day_of_week @ difference @ + target_actual_weekday !
+    current_day_of_week @ difference @ + target_actual_day_of_week !
     target_actual_day_of_week @ DAYS_IN_WEEK > if ( More than a week? Roll over. )
         target_actual_day_of_week SAT - target_actual_day_of_week !
     then
@@ -465,7 +475,7 @@ lvar last_year
     var current_day_of_week
     ( If this is for the month field, check if this is the
       last day of the month. )
-    time_type @ if "month" strcmp not if
+    time_type @ "month" strcmp not if
         get_current_monthdays day @ = if
             TRUE exit
         else
@@ -506,9 +516,13 @@ lvar last_year
     then
 ;
 
-: slash[ str:time_type int:interval -- bool:result ] ( Runs a / test. )
-    current_time @ time_type array_getitem interval @ % not if
-        TRUE
+: slash[ str:time_type arr:numerator int:interval -- bool:result ] ( Runs a / test. )
+    numerator @ array_vals pop COMMAND_KEYS @ swap array_getitem execute if
+        time_type @ current_time @ array_getitem interval @ % not if
+            TRUE
+        else
+            FALSE
+        then
     else
         FALSE
     then
@@ -518,8 +532,38 @@ lvar last_year
     TRUE
 ;
 
-: launch_progs
-    compiled_crobtab @ time_tests
+: digit[ str:time_type int:integer -- bool:result ]
+    time_type @ current_time @ array_getitem integer @ = if
+        TRUE
+    else
+        FALSE
+    then
+;
+
+: generate_command_keys ( Fill the lvar with a dictionary for the tests. )
+    {     
+        "W" 'W
+        "L" 'L
+        "-" 'dash
+        "/" 'slash
+        "*" 'star 
+        "digit" 'digit
+    }dict COMMAND_KEYS ! 
+;
+
+: run_tests ( @ -- bool:result ) ( Runs a test )
+    foreach
+        array_vals pop COMMAND_KEYS @ array_getitem execute if
+            continue
+        else
+            FALSE break
+        then
+    repeat
+    TRUE
+;
+
+: launch_progs ( Launches each of the programs in the crontab. )
+    compiled_crontab @
     foreach
         fork not if
             continue
@@ -539,14 +583,16 @@ lvar last_year
 
 : main_loop ( -- ) ( Main loop for the cron process )
     var oldme
-    prog CRONPID pid setprop
+    set_constants
+    generate_command_keys
+    prog CRONPID pid intostr setprop
     crontab_load
     "Cron start." ctell
     background
     begin
         fork not if
-            60 timer_start "Minute"
             begin
+                60 "Minute" timer_start
                 event_wait
                 case
                     "Minute" smatch when
@@ -557,6 +603,9 @@ lvar last_year
                         "player" array_getitem me ! crontab_load
                         oldme @ me !
                     end
+                    "Stop" smatch when
+                        exit
+                    end
                 endcase
             repeat
         else
@@ -565,30 +614,79 @@ lvar last_year
     repeat
 ;
 
+: list_crontab
+    "Listing crontab..." ctell
+    FATE CRONTAB array_get_proplist
+    foreach
+        swap pop ctell
+    repeat
+    "Done." ctell
+;
+
+: live_reload
+    0 try
+        "Sending reload signal..." ctell
+        prog CRONPID getpropstr atoi "Reload" TRUE event_send
+    catch
+        "Reload signal failed! Error: " swap strcat ctell
+    endcatch
+;
+
+
+: edit_crontab
+    FATE CRONTAB array_get_proplist array_vals EDITOR "end" stringcmp not if ( Save the list. )
+        "Installing new crontab..." ctell
+        array_make FATE CRONTAB -3 rotate array_put_proplist
+        "Crontab installed." ctell
+        live_reload
+    else
+        "Aborted." ctell
+    then
+;
+
+: stop
+    0 try
+        "Sending stop signal..." ctell
+        prog CRONPID getpropstr atoi "Reload" TRUE event_send
+    catch
+        "Stop signal failed! Error: " swap strcat ctell
+    endcatch
+;
+
+: do-help
+    "Supply an argument." ctell ( To be revised longer. )
+;
+
 : main
+    var! arg
     "me" match me !
 
-    me @ wizard flag? and me @ FATE controls and not if
+    me @ wizard flag? me @ FATE controls and not if
         "Permission denied." ctell
     then
 
-    trigger @ "Queued Event." strcmp not if
-        init exit
-    then
-
-    command @ case 
+    arg @ case 
+        "Startup" strcmp not if
+            main_loop exit
+        end
         "#r*" smatch when
-            live_reload 
+            live_reload exit
         end
         "#e*" smatch when
-            edit_crontab
+            edit_crontab exit
+        end
+        "#l*" smatch when
+            list_crontab exit
         end
         "#sta*" smatch when
-            manual_init
+            main_loop exit
         end
         "#sto*" smatch when
-            stop
+            stop exit
         end
-        default "Command not recognized: " command @ strcat ctell end
+        "" strcmp not when
+            do-help
+        end
+        default "Command not recognized: " arg @ strcat ctell end
     endcase
 ;
