@@ -143,16 +143,16 @@ lvar parser_address
 ;
 
 : get_time ( -- @ ) ( Gets the current time, puts it into a workable arrray. )
-    { timesplit } var! timevar
+    { systime timesplit }list var! timevar
     ( We won't be using all of these. )
-    { "seconds" "minutes" "hours" "monthday" "month" "year" "day_of_week" "yearday" }
+    { "second" "minute" "hours" "monthday" "month" "year" "day_of_week" "yearday" }list
     { swap
         foreach
-            swap timevar array_getitem ( Zip these up into a dictionary array )
+            swap timevar @ swap array_getitem ( Zip these up into a dictionary array )
         repeat
     }dict timevar !
     ( Correct some incompatibility. Day_of_week starts at 1 instead of 0 like it should. )
-    timevar @ "day_of_week" timevar @ "day_of_week" array_getitem -- array_setitem current_time !
+    timevar @ "day_of_week" timevar @ "day_of_week" array_getitem -- swap rot rot array_setitem current_time !
     
 ;
 
@@ -213,7 +213,7 @@ lvar parser_address
     cmd @ "^[^/]*/[[:digit:]]+$" REG_ICASE regexp and not if
         { "Invalid slash notation -- '" cmd @ "'" }cat abort
     then
-    cmd @ "/" split_once swap interval !
+    cmd @ "/" split_once interval !
     {   swap "Slash" swap dup FALSE FALSE parser_address @ execute ( The slash operator can have other operators as the numerator. )
         interval @ atoi "/"                                        ( This address hack due to interdependence. )
     }list
@@ -265,7 +265,7 @@ lvar parser_address
                   raw_time_string @ item @ dash_parse
               end
               "^[[:digit:]]+$" REG_ICASE regexp and when
-                  { "digit" item @ atoi }list
+                  { item @ atoi "digit" }list
               end
               "W" instring when
                   w_permitted? @ if
@@ -406,7 +406,7 @@ lvar parser_address
     then
 ;
 
-: W[ str:time_type int:day_of_month -- bool:result ] ( Execute on closest weekday )
+: W[ int:day_of_month str:time_type -- bool:result ] ( Execute on closest weekday )
     var current_day
     var current_day_of_month
     var current_day_of_week
@@ -470,7 +470,7 @@ lvar parser_address
     then
 ;
 
-: L[ str:time_type int:day -- bool:result ]
+: L[ int:day str:time_type -- bool:result ]
     var current_day_of_week
     ( If this is for the month field, check if this is the
       last day of the month. )
@@ -505,19 +505,20 @@ lvar parser_address
     then
 ;
 
-: dash[ str:time_type int:begin_number int:end_number -- bool:result ]
+: dash[ int:begin_number int:end_number str:time_type -- bool:result ]
     var this_time
-    current_time @ time_type array_getitem this_time !
-    this_time @ begin_number <= this_time @ end_number @ >= and if
+    current_time @ time_type @ array_getitem this_time !
+    this_time @ begin_number @ >= this_time @ end_number @ <= and if
         TRUE
     else
         FALSE
     then
 ;
 
-: slash[ str:time_type arr:numerator int:interval -- bool:result ] ( Runs a / test. )
-    numerator @ array_vals pop COMMAND_KEYS @ swap array_getitem execute if
-        time_type @ current_time @ array_getitem interval @ % not if
+: slash[ arr:numerator int:interval str:time_type  -- bool:result ] ( Runs a / test. )
+    numerator @ array_vals pop array_vals pop ( numerator command is in a wrapper )
+    COMMAND_KEYS @ swap array_getitem time_type @ swap execute if
+        current_time @ time_type @ array_getitem interval @ % not if
             TRUE
         else
             FALSE
@@ -531,8 +532,8 @@ lvar parser_address
     TRUE
 ;
 
-: digit[ str:time_type int:integer -- bool:result ]
-    time_type @ current_time @ array_getitem integer @ = if
+: digit[ int:integer str:time_type -- bool:result ]
+    current_time @ time_type @ array_getitem integer @ = if
         TRUE
     else
         FALSE
@@ -550,24 +551,36 @@ lvar parser_address
     }dict COMMAND_KEYS ! 
 ;
 
-: run_tests ( @ -- bool:result ) ( Runs a test )
+: run_tests ( @ -- bool:result ) ( Runs all tests. Determines if a program should launch now. )
+    var test_passed
+    var time_type
+    "target" array_delitem
     foreach
-        array_vals pop COMMAND_KEYS @ array_getitem execute if
-            continue
+        swap time_type !
+        foreach
+            swap pop
+            array_vals pop COMMAND_KEYS @ swap array_getitem time_type @ swap execute if
+                TRUE test_passed ! break
+            then
+        repeat
+        test_passed @ not if
+            FALSE exit
         else
-            FALSE break
+            FALSE test_passed !
         then
     repeat
     TRUE
 ;
 
 : launch_progs ( Launches each of the programs in the crontab. )
+    fork if
+        exit
+    then
+    get_time
     compiled_crontab @
     foreach
-        fork not if
-            continue
-        then
-        swap dup run_tests if
+        swap pop
+        dup run_tests if
             "target" array_getitem
             array_vals try
                 swap call
@@ -580,7 +593,7 @@ lvar parser_address
     repeat
 ;
 
-: get_pid
+: get_pid ( -- i ) ( Gets the PID the cron process recorded when the daemon launched. )
     prog CRONPID getpropstr atoi
 ;
 
@@ -596,30 +609,27 @@ lvar parser_address
     "Cron start." ctell
     background
     begin
-        fork if
-            begin
-                60 "Minute" timer_start
-                event_wait
-                case
-                    "TIMER.Minute" smatch when
-                        pop break
-                    end
-                    "USER.Reload" smatch when
-                        me @ oldme ! ( Reloader may be different. )
-                        "player" array_getitem me ! crontab_load
-                        oldme @ me !
-                    end
-                    "USER.Stop" smatch when
-                        exit
-                    end
-                    default
-                        pop
-                    end
-                endcase
-            repeat
-        else
-            launch_progs exit
-        then
+        60 "Minute" timer_start
+        event_wait
+        case
+            "TIMER.Minute" smatch when
+                pop launch_progs
+                get_pid pid = not if ( Terminate the forked process )
+                    exit
+                then
+            end
+            "USER.Reload" smatch when
+                me @ oldme ! ( Reloader may be different. )
+                "player" array_getitem me ! crontab_load
+                oldme @ me !
+            end
+            "USER.Stop" smatch when
+                exit
+            end
+            default
+                pop continue
+            end
+        endcase
     repeat
 ;
 
