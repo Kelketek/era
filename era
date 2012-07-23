@@ -145,7 +145,7 @@ lvar parser_address
 : get_time ( -- @ ) ( Gets the current time, puts it into a workable arrray. )
     { systime timesplit }list var! timevar
     ( We won't be using all of these. )
-    { "second" "minute" "hours" "monthday" "month" "year" "day_of_week" "yearday" }list
+    { "second" "minute" "hour" "monthday" "month" "year" "day_of_week" "yearday" }list
     { swap
         foreach
             swap timevar @ swap array_getitem ( Zip these up into a dictionary array )
@@ -181,9 +181,9 @@ lvar parser_address
         FALSE
     then
     if
-        DAYS_IN_MONTHS FEB 29 array_setitem this_years_monthdays !
+        29 DAYS_IN_MONTHS @ FEB array_setitem this_years_monthdays !
     else
-        DAYS_IN_MONTHS this_years_monthdays !
+        DAYS_IN_MONTHS @ this_years_monthdays !
     then
 ;
 
@@ -224,7 +224,7 @@ lvar parser_address
     cmd @ "^[[:digit:]]+W$" REG_ICASE regexp and not if
         { "Invalid W notation -- '" cmd @ "'" }cat abort
     then
-    cmd @ toupper "W" split_once swap pop interval !
+    cmd @ toupper "W" split_once pop interval !
     { interval @ atoi "W" }list
 ;
 
@@ -304,7 +304,7 @@ lvar parser_address
 ;
 
 : parse_day_of_week[ str:day_of_week_string -- str:"year" @:year_tests ]
-    "day_of_week" dup day_of_week_string @ dup DAYS_OF_WEEK @ dict_sub TRUE FALSE parser
+    "day_of_week" dup day_of_week_string @ dup DAYS_OF_WEEK @ dict_sub FALSE TRUE parser
 ;
 
 : parse_target[ str:target_string -- "target" @:target_spec ]
@@ -391,7 +391,7 @@ lvar parser_address
 ;
 
 : weekday?[ int:day ] ( Checks if a number represents a weekday. )
-    day @ MON >= day @ FRI <= if
+    day @ MON >= day @ FRI <= and if
         TRUE
     else
         FALSE
@@ -407,7 +407,6 @@ lvar parser_address
 ;
 
 : W[ int:day_of_month str:time_type -- bool:result ] ( Execute on closest weekday )
-    var current_day
     var current_day_of_month
     var current_day_of_week
     var current_month
@@ -417,15 +416,15 @@ lvar parser_address
     var shift
     var guess
     current_time @ "monthday" array_getitem current_day_of_month !
-    current_time @ "day_of_week" array_getitem current_day !
+    current_time @ "day_of_week" array_getitem current_day_of_week !
     ( Simple scenario. Date is today, today is a weekday )
     day_of_month @ current_day_of_month @ = if
-        current_day @ weekday? if
+        current_day_of_week @ weekday? if
             TRUE exit
         then
     then
     ( If it's not a Monday or Friday, it's not the closest day. )
-    current_day_of_week @ MON = current_day_of_week @ FRI = or if
+    current_day_of_week @ MON = current_day_of_week @ FRI = or not if
         FALSE exit
     then
     ( A candidate weekday is never more than 2 days away. )
@@ -450,11 +449,6 @@ lvar parser_address
     then
     day_of_month @ shift @ + guess !
     guess @ date_beyond_monthborder? if
-        guess @ current_day_of_month @ = if
-            TRUE exit
-        else
-            FALSE exit
-        then
         ( If it's Saturday and Friday is not in the month, Monday. )
         ( If it's Sunday, and Monday is not in the month, Friday. )
         shift @ 0 < if
@@ -463,6 +457,12 @@ lvar parser_address
             guess @ 2 - guess !
         then
         guess @ current_day_of_month = if
+            TRUE exit
+        else
+            FALSE exit
+        then
+    else
+        guess @ current_day_of_month @ = if
             TRUE exit
         else
             FALSE exit
@@ -573,22 +573,22 @@ lvar parser_address
 ;
 
 : launch_progs ( Launches each of the programs in the crontab. )
+    var current_command
     fork if
         exit
     then
     get_time
+    month_days_set
     compiled_crontab @
     foreach
-        swap pop
-        dup run_tests if
-            "target" array_getitem
+        swap pop current_command !
+        current_command @ run_tests if
+            current_command @ "target" array_getitem
             array_vals try
                 swap call
             catch ( Remember to fill this in properly later. -Kel )
                 pop
             endcatch
-        else
-            pop
         then
     repeat
 ;
