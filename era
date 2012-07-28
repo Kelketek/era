@@ -77,13 +77,13 @@ $def OCT 10
 $def NOV 11
 $def DEC 12
 
-$def SUN 1
-$def MON 2
-$def TUE 3
-$def WED 4
-$def THU 5
-$def FRI 6
-$def SAT 7
+$def SUN 0
+$def MON 1
+$def TUE 2
+$def WED 3
+$def THU 4
+$def FRI 5
+$def SAT 6
 
 $def DAYS_IN_WEEK 7
 
@@ -99,13 +99,13 @@ lvar last_year
 lvar parser_address
 
 : set_constants ( -- ) ( sets more complex 'constants' )
-     { "MON" "1"
+     { "SUN" "0"
+       "MON" "1"
        "TUE" "2"
        "WED" "3"
        "THU" "4"
        "FRI" "5"
-       "SAT" "6"
-       "SUN" "7" }dict DAYS_OF_WEEK !
+       "SAT" "6" }dict DAYS_OF_WEEK !
 
      ( For string substitution )
      { "JAN" "1"
@@ -152,7 +152,7 @@ lvar parser_address
         repeat
     }dict timevar !
     ( Correct some incompatibility. Day_of_week starts at 1 instead of 0 like it should. )
-    timevar @ "day_of_week" timevar @ "day_of_week" array_getitem -- swap rot rot array_setitem current_time !
+    timevar @ "day_of_week" timevar @ "day_of_week" array_getitem -- swap rot swap array_setitem current_time !
     
 ;
 
@@ -228,15 +228,14 @@ lvar parser_address
     { interval @ atoi "W" }list
 ;
 
-: l_parse[  str:raw_string str:cmd -- @:test ]
+: l_parse[  str:time_type str:raw_string str:cmd -- @:test ]
+    time_type @ "monthday" strcmp not cmd @ toupper "L" strcmp not and if
+        { UNDEFINED "L" }list exit
+    then
     var interval
     cmd @ "^[[:digit:]]+L$" REG_ICASE regexp and if
-        { "Invalid L notation -- '" raw_string @ "'" }cat abort
-        cmd @ toupper "L" split_once swap pop interval !
+        cmd @ toupper "L" split_once pop interval !
         { interval @ atoi "L" }list exit
-    then
-    cmd @ toupper "L" strcmp not if
-        { UNDEFINED "L" }list exit
     then
     { "Invalid L notation -- '" raw_string @ "'" }cat abort
 ;
@@ -276,7 +275,7 @@ lvar parser_address
               end
               "L" instring when
                   l_permitted? @ if
-                      raw_time_string @ item @ l_parse
+                      time_type @ raw_time_string @ item @ l_parse
                   else
                       { "L not permitted in " time_type @ " field." }cat abort
                   then
@@ -487,17 +486,15 @@ lvar parser_address
     day @ UNDEFINED = if
         current_day_of_week @ SAT = if
             TRUE exit
-        else
-            FALSE exit
         then
     then
 
     ( If it's not the day of week we want, it's not relevant. )
     current_day_of_week @ day @ = not if
-        exit
+        FALSE exit
     then
     ( Is it the last time this day of week appears this month? )
-    current_time @ "day_of_month" array_getitem DAYS_IN_WEEK +
+    current_time @ "monthday" array_getitem DAYS_IN_WEEK +
     date_beyond_monthborder? if
         TRUE exit
     else
