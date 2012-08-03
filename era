@@ -473,8 +473,8 @@ lvar parser_address
     var current_day_of_week
     ( If this is for the month field, check if this is the
       last day of the month. )
-    time_type @ "month" strcmp not if
-        get_current_monthdays day @ = if
+    time_type @ "monthday" strcmp not if
+        get_current_monthdays current_time @ "monthday" array_getitem = if
             TRUE exit
         else
             FALSE exit
